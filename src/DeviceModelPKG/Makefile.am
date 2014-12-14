@@ -1,0 +1,5 @@
+
+AM_CPPFLAGS = @Xyce_INCS@
+
+SUBDIRS=Core OpenModels TCADModels EXTSC NeuronModels ADMS $(MAYBE_RAD) $(MAYBE_NONFREE)
+

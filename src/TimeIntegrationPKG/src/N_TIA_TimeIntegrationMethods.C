@@ -1,0 +1,427 @@
+//-----------------------------------------------------------------------------
+// Copyright Notice
+//
+//   Copyright 2002 Sandia Corporation. Under the terms
+//   of Contract DE-AC04-94AL85000 with Sandia Corporation, the U.S.
+//   Government retains certain rights in this software.
+//
+//    Xyce(TM) Parallel Electrical Simulator
+//    Copyright (C) 2002-2014 Sandia Corporation
+//
+//    This program is free software: you can redistribute it and/or modify
+//    it under the terms of the GNU General Public License as published by
+//    the Free Software Foundation, either version 3 of the License, or
+//    (at your option) any later version.
+//
+//    This program is distributed in the hope that it will be useful,
+//    but WITHOUT ANY WARRANTY; without even the implied warranty of
+//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//    GNU General Public License for more details.
+//
+//    You should have received a copy of the GNU General Public License
+//    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//-----------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------
+// Filename      : $RCSfile: N_TIA_TimeIntegrationMethods.C,v $
+//
+// Purpose       : This file contains the functions which define the
+//		             time integration methods classes.
+//
+// Special Notes :
+//
+// Creator       : Buddy Watts
+//
+// Creation Date : 6/1/00
+//
+// Revision Information:
+// ---------------------
+//
+// Revision Number: $Revision: 1.63.2.1 $
+//
+// Revision Date  : $Date: 2014/09/02 22:49:49 $
+//
+// Current Owner  : $Author: erkeite $
+//-----------------------------------------------------------------------------
+
+#include <Xyce_config.h>
+
+
+// ---------- Standard Includes ----------
+
+#include <N_UTL_Misc.h>
+
+#ifdef HAVE_IOSTREAM
+#include <iostream>
+#else
+#include <iostream.h>
+#endif
+
+#include <stdio.h>
+
+// ----------   Xyce Includes   ----------
+#include <N_TIA_TimeIntegrationMethods.h>
+
+#include <N_ANP_OutputMgrAdapter.h>
+#include <N_ERH_ErrorMgr.h>
+#include <N_LAS_MultiVector.h>
+#include <N_LAS_System.h>
+#include <N_LAS_Vector.h>
+#include <N_TIA_BackwardDifferentiation15.h>
+#include <N_TIA_DataStore.h>
+#include <N_TIA_Gear12.h>
+#include <N_TIA_NoTimeIntegration.h>
+#include <N_TIA_OneStep.h>
+#include <N_TIA_StepErrorControl.h>
+#include <N_TIA_TIAParams.h>
+
+
+// ---------- Static Initializations ----------
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_WorkingIntegrationMethod::N_TIA_WorkingIntegrationMethod
+// Purpose       : constructor
+// Special Notes :
+// Scope         : public
+// Creator       : Buddy Watts, SNL
+// Creation Date : 6/01/00
+//-----------------------------------------------------------------------------
+N_TIA_WorkingIntegrationMethod::
+  N_TIA_WorkingIntegrationMethod
+   (N_TIA_TIAParams & tiaP,
+    N_TIA_StepErrorControl & secTmp,
+    N_TIA_DataStore & dsTmp)
+  : integMethodPtr(0),
+    tiaParams(tiaP),
+    sec(secTmp),
+    ds(dsTmp)
+{
+  return;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_WorkingIntegrationMethod::N_TIA_WorkingIntegrationMethod
+// Purpose       : constructor
+// Special Notes :
+// Scope         : public
+// Creator       : Buddy Watts, SNL
+// Creation Date : 6/01/00
+//-----------------------------------------------------------------------------
+N_TIA_WorkingIntegrationMethod::N_TIA_WorkingIntegrationMethod(
+  const unsigned int integration_method,
+  N_TIA_TIAParams & tiaP,
+  N_TIA_StepErrorControl & secTmp,
+  N_TIA_DataStore & dsTmp)
+  :
+  workingIntegMethod(integration_method),
+  integMethodPtr(0),
+  tiaParams(tiaP),
+  sec(secTmp),
+  ds(dsTmp)
+{
+  createTimeIntegMethod(integration_method);
+  return;
+}
+
+//-----------------------------------------------------------------------------
+// Function      :
+//            N_TIA_WorkingIntegrationMethod::~N_TIA_WorkingIntegrationMethod()
+// Purpose       : destructor
+// Special Notes :
+// Scope         : public
+// Creator       : Buddy Watts, SNL
+// Creation Date : 6/01/00
+//-----------------------------------------------------------------------------
+N_TIA_WorkingIntegrationMethod::~N_TIA_WorkingIntegrationMethod()
+{
+  if (integMethodPtr != 0) 
+  {
+    delete integMethodPtr;
+    integMethodPtr = 0; 
+  }
+  return;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_WorkingIntegrationMethod::createTimeIntegMethod
+// Purpose       : Creates the time integration method class --- assigning a
+//                 pointer and the Leading Coefficient value of the method.
+// Special Notes :
+// Scope         : public
+// Creator       : Buddy Watts, SNL
+// Creation Date : 6/01/00
+//-----------------------------------------------------------------------------
+void N_TIA_WorkingIntegrationMethod::createTimeIntegMethod(
+  const unsigned int integration_method)
+{
+#ifdef Xyce_DEBUG_TIME
+  Xyce::dout() << "\n  ********** createTimeIntegMethod Function Called" << std::endl;
+#endif
+
+  N_TIA_TimeIntegrationMethod* pTIM;
+  char ch_msg[256];
+
+  workingIntegMethod = integration_method;
+
+  switch(integration_method)
+  {
+    case TIAMethod_NONE:
+      pTIM = N_TIA_NoTimeIntegration::factory(tiaParams,sec,ds);
+      break;
+    case TIAMethod_BACKWARD_DIFFERENTIATION_15:
+      pTIM = N_TIA_BackwardDifferentiation15::factory(tiaParams,sec,ds);
+      break;
+    case TIAMethod_GEAR_12:
+      pTIM = N_TIA_Gear12::factory(tiaParams,sec,ds);
+      break;
+    case TIAMethod_ONESTEP:
+      pTIM = N_TIA_OneStep::factory(tiaParams,sec,ds);
+      break;
+
+    // deprecated old-DAE methods:
+    case TIAMethod_BACKWARD_EULER:
+    case TIAMethod_BACKWARD_DIFFERENTIATION_2:
+    case TIAMethod_TRAPEZOIDAL:
+    default:
+      Xyce::Report::DevelFatal0() << "N_TIA_WorkingIntegrationMethod::createTimeIntegMethod.  Invalid integration method "
+                                  << integration_method
+                                  << " specified";
+      break;
+  }
+
+  if( integMethodPtr ) { delete integMethodPtr; integMethodPtr = 0; }
+
+  integMethodPtr = pTIM;
+
+#ifdef Xyce_VERBOSE_TIME
+  printWorkingIntegMethod(Xyce::lout());
+#endif
+
+  return;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_WorkingIntegrationMethod::printWorkingIntegMethod
+// Purpose       : This function is a debug output function.  It prints
+//                 to the screen the current integration method.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 6/26/00
+//-----------------------------------------------------------------------------
+void N_TIA_WorkingIntegrationMethod::printWorkingIntegMethod(std::ostream &os)
+{
+  os << "  Integration method = ";
+  
+  switch (workingIntegMethod)
+  {
+    case TIAMethod_NONE:
+      os << "None\n";
+      break;
+    case TIAMethod_BACKWARD_DIFFERENTIATION_15:
+      os << "Backward Differentiation 15\n";
+      break;
+    case TIAMethod_ONESTEP:
+      os << "Onestep: Trapezoidal\n";
+      break;
+    case TIAMethod_GEAR_12:
+      os << "Gear 12\n";
+      break;
+    default:
+      Xyce::Report::DevelFatal() << "N_TIA_WorkingIntegrationMethod::printWorkingIntegMethod():  Time Integration method not specified correctly.\n";
+      break;
+  }
+
+  os << std::endl;
+}
+
+//*****************************************************************************
+//************* Functions for Time Integration Method Base class  *************
+//*****************************************************************************
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::N_TIA_TimeIntegrationMethod
+// Purpose       : constructor
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, 9233: Computational Sciences
+// Creation Date : 9/11/00
+//-----------------------------------------------------------------------------
+
+N_TIA_TimeIntegrationMethod::N_TIA_TimeIntegrationMethod
+  ( N_TIA_TIAParams & tiaP, 
+    N_TIA_StepErrorControl & secTmp,
+    N_TIA_DataStore & dsTmp) 
+  : leadingCoeff(1.0),
+    tiaParams(tiaP),
+    sec(secTmp),
+    ds(dsTmp)
+{
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::~N_TIA_TimeIntegrationMethod
+// Purpose       : destructor
+// Special Notes :
+// Scope         : public
+// Creator       : Buddy Watts, SNL
+// Creation Date : 6/01/00
+//-----------------------------------------------------------------------------
+N_TIA_TimeIntegrationMethod::~N_TIA_TimeIntegrationMethod() 
+{
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::partialTimeDeriv
+// Purpose       : 
+// Special Notes :
+// Scope         : public
+// Creator       : 
+// Creation Date : 1/20/07
+//-----------------------------------------------------------------------------
+double N_TIA_TimeIntegrationMethod::partialTimeDeriv()
+{
+  if (sec.currentTimeStep < 1e-30) 
+  {
+    Xyce::Report::UserWarning() << "Excessively small current time step, incorrectly returning with large value";
+
+    return (leadingCoeff * 1.e+30);
+  }
+  return (leadingCoeff / sec.currentTimeStep);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::obtainResidual
+// Purpose       : Evaluate residual for nonlinear solver
+// Special Notes : 
+// Scope         : public
+// Creator       : Todd Coffey, SNL
+// Creation Date : 3/08/04
+//-----------------------------------------------------------------------------
+void N_TIA_TimeIntegrationMethod::obtainResidual()
+{
+  std::string msg = "N_TIA_ControlMethod::obtainResidual";
+  msg += " The current algorithm does not have an implemented";
+  msg += " obtainResidual function.\n";
+  N_ERH_ErrorMgr::report(N_ERH_ErrorMgr::DEV_FATAL_0, msg);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::obtainSensitivityResiduals
+// Purpose       : Evaluate sensitivity residuals 
+// Special Notes : 
+// Scope         : public
+// Creator       : Eric Keiter, SNL
+// Creation Date : 
+//-----------------------------------------------------------------------------
+void N_TIA_TimeIntegrationMethod::obtainSensitivityResiduals()
+{
+  std::string msg = "N_TIA_ControlMethod::obtainSensitivityResiduals";
+  msg += " The current algorithm does not have an implemented";
+  msg += " obtainSensitivityResiduals function.\n";
+  N_ERH_ErrorMgr::report(N_ERH_ErrorMgr::DEV_FATAL_0, msg);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::loadFinalSensitivityDerivatives 
+// Purpose       : Evaluate sensitivity residuals 
+// Special Notes : 
+// Scope         : public
+// Creator       : Eric Keiter, SNL
+// Creation Date : 
+//-----------------------------------------------------------------------------
+void N_TIA_TimeIntegrationMethod::loadFinalSensitivityDerivatives ()
+{
+  std::string msg = "N_TIA_ControlMethod::loadFinalSensitivityDerivatives";
+  msg += " The current algorithm does not have an implemented";
+  msg += " loadFinalSensitivityDerivatives function.\n";
+  N_ERH_ErrorMgr::report(N_ERH_ErrorMgr::DEV_FATAL_0, msg);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::rejectStep
+// Purpose       : restore history & choose new step-size & order
+// Special Notes : 
+// Scope         : public
+// Creator       : Eric Keiter, SNL
+// Creation Date : 10/25/07
+//-----------------------------------------------------------------------------
+void N_TIA_TimeIntegrationMethod::rejectStep()
+{
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::completeStep
+// Purpose       : update history & choose new step-size & order
+// Special Notes : 
+// Scope         : public
+// Creator       : Eric Keiter
+// Creation Date : 10/25/07
+//-----------------------------------------------------------------------------
+void N_TIA_TimeIntegrationMethod::completeStep()
+{
+  sec.lastTime    = sec.currentTime;
+  sec.currentTime = sec.nextTime;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::printOutputSolution()
+// Purpose       : Print output that is dumbed down in terms of order.
+//
+// Special Notes : This routine picks smaller time steps to approximate first
+//                 order integration from the perspective of the output.
+//                 
+//                 For the old method classes, this function does not do
+//                 any interpolation (none is possible), and just calls 
+//                 the output manager adapter directly.
+//
+//                 ERK:  Note, the old methods (old-DAE) have all been 
+//                 removed from Xyce, so possibly this function isn't needed
+//                 anymore.
+//
+// Scope         : public
+// Creator       : Todd Coffey, SNL, 1414
+// Creation Date : 11/22/05
+//-----------------------------------------------------------------------------
+bool N_TIA_TimeIntegrationMethod::printOutputSolution(
+                  N_ANP_OutputMgrAdapter & outputManagerAdapter, 
+                  const double time,
+                  N_LAS_Vector * solnVecPtr,
+                  const bool doNotInterpolate,
+                  const std::vector<double> & outputInterpolationTimes,
+                  bool skipPrintLineOutput )
+{
+#ifdef Xyce_DEBUG_TIME
+  Xyce::dout() << "Calling conventional outputs!" << std::endl;
+#endif
+
+  outputManagerAdapter.tranOutput( time, *solnVecPtr, 
+      *ds.currStatePtr, *ds.currStorePtr, 
+        ds.objectiveVec_, 
+        ds.dOdpVec_, ds.dOdpAdjVec_, 
+        ds.scaled_dOdpVec_, ds.scaled_dOdpAdjVec_, 
+        skipPrintLineOutput);
+
+  return true;
+}
+
+
+//-----------------------------------------------------------------------------
+// Function      : N_TIA_TimeIntegrationMethod::saveOutputSolution
+// Purpose       : 
+// Special Notes : For the old method functions (old-DAE/ODE) no interpolation
+//                 is possible, so this function calls directly through to the
+//                 output manager.
+// Scope         : public
+// Creator       : Eric Keiter, SNL, 1437
+// Creation Date : 10/25/07
+//-----------------------------------------------------------------------------
+bool N_TIA_TimeIntegrationMethod::saveOutputSolution(
+                  N_ANP_OutputMgrAdapter & outputManagerAdapter,
+                  N_LAS_Vector * solnVecPtr,
+                  const double saveTime,
+                  const bool doNotInterpolate) 
+{
+  outputManagerAdapter.outputDCOP( *(solnVecPtr) );
+  return true;
+}
+

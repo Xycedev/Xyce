@@ -1,0 +1,1374 @@
+//-----------------------------------------------------------------------------
+// Copyright Notice
+//
+//   Copyright 2002 Sandia Corporation. Under the terms
+//   of Contract DE-AC04-94AL85000 with Sandia Corporation, the U.S.
+//   Government retains certain rights in this software.
+//
+//    Xyce(TM) Parallel Electrical Simulator
+//    Copyright (C) 2002-2014 Sandia Corporation
+//
+//    This program is free software: you can redistribute it and/or modify
+//    it under the terms of the GNU General Public License as published by
+//    the Free Software Foundation, either version 3 of the License, or
+//    (at your option) any later version.
+//
+//    This program is distributed in the hope that it will be useful,
+//    but WITHOUT ANY WARRANTY; without even the implied warranty of
+//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//    GNU General Public License for more details.
+//
+//    You should have received a copy of the GNU General Public License
+//    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//-----------------------------------------------------------------------------
+
+//-------------------------------------------------------------------------
+// Filename       : $RCSfile: N_NLS_Manager.C,v $
+//
+// Purpose        : Body for the nonlinear solver manager class implementation
+//                  which will allow for the creation and selection of NLS
+//                  algorithms.
+//
+// Special Notes  : GOF Strategy Pattern
+//
+// Creator        : Scott A. Hutchinson, SNL, Parallel Computational Sciences
+//
+// Creation Date  : 04/28/00
+//
+// Revision Information:
+// ---------------------
+//
+// Revision Number: $Revision: 1.185.2.1 $
+//
+// Revision Date  : $Date $
+//
+// Current Owner  : $Author: erkeite $
+//-------------------------------------------------------------------------
+
+#include <Xyce_config.h>
+
+// ----------  Xyce Includes   ----------
+#include <N_UTL_Misc.h>
+
+#include <N_NLS_fwd.h>
+#include <N_NLS_Manager.h>
+#include <N_NLS_NOX_Interface.h>
+#include <N_NLS_DampedNewton.h>
+#include <N_NLS_TwoLevelNewton.h>
+#include <N_NLS_Sensitivity.h>
+#include <N_NLS_ConductanceExtractor.h>
+#include <N_NLS_NonLinInfo.h>
+
+#include <N_ERH_ErrorMgr.h>
+#include <N_IO_CmdParse.h>
+#include <N_IO_OutputMgr.h>
+#include <N_UTL_Expression.h>
+
+#include <N_TIA_DataStore.h>
+
+// ----------  Trilinos Includes   ----------
+
+#include <Teuchos_RefCountPtr.hpp>
+
+namespace Xyce {
+namespace Nonlinear {
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::Manager
+// Purpose       : constructor
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 5/01/00
+//-----------------------------------------------------------------------------
+Manager::Manager(N_IO_CmdParse & cp)
+  : commandLine_(cp),
+    nlsPtr_(0x0),
+    conductanceExtractorPtr_(0x0),
+    nlsSensitivityPtr_(0x0),
+    topPtr_(0x0),
+    anaIntPtr_(0x0),
+    loaderPtr_(0x0),
+    lasSysPtr_(0x0),
+    rhsVecPtr_(0x0),
+    outputPtr_(0x0),
+    pdsMgrPtr_(0x0),
+    pkgOptMgrPtr_(0x0),
+    dsPtr_(0x0),
+    twoLevelNewtonFlag_(false),
+    noxFlag_(false),
+    noxFlagInner_(false),
+    noxFlagTransient_(false),
+    setupSensFlag_(false),
+    initializeAllFlag_(false),
+    exprPtr(0x0)
+{
+  matrixFreeFlag_ = false;
+}
+
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::~Manager
+// Purpose       : destructor
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 5/01/00
+//-----------------------------------------------------------------------------
+
+Manager::~Manager()
+{
+  delete nlsPtr_;
+  nlsPtr_ = 0x0;
+
+  if (nlsSensitivityPtr_)
+  {
+    delete nlsSensitivityPtr_;
+    nlsSensitivityPtr_ = 0x0;
+  }
+
+  if (conductanceExtractorPtr_)
+  {
+    delete conductanceExtractorPtr_;
+    conductanceExtractorPtr_  = 0x0;
+  }
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerPkgOptionsMgr
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Rich Schiek, 1437
+// Creation Date : 10/21/08
+//-----------------------------------------------------------------------------
+bool Manager::registerPkgOptionsMgr( N_IO_PkgOptionsMgr *pkgOptPtr )
+{
+  pkgOptMgrPtr_ = pkgOptPtr;
+  std::string netListFile = "";
+  if (commandLine_.getArgumentValue("netlist") != "")
+  {
+    netListFile = commandLine_.getArgumentValue("netlist");
+  }
+  pkgOptMgrPtr_->submitRegistration(
+      "NONLIN", netListFile, new Manager_OptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "NONLIN-TRAN", netListFile, new Manager_TranOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "NONLIN-HB", netListFile, new Manager_HBOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "LINSOL", netListFile, new Manager_LSOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "LOCA", netListFile, new Manager_LocaOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "SENS", netListFile, new Manager_SensOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "SENSITIVITY", netListFile, new Manager_SensitivityOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "NONLIN-TWOLEVEL", netListFile, new Manager_TwoLvlOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "NONLIN-TWOLEVEL-TRAN", netListFile, new Manager_TwoLvlTranOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "TIMEINT", netListFile, new Manager_TimeOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "DCOP", netListFile, new Manager_DCOPRestartOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "IC", netListFile, new Manager_ICOptionsReg( this ) );
+
+  pkgOptMgrPtr_->submitRegistration(
+      "NODESET", netListFile, new Manager_NodeSetOptionsReg( this ) );
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerParallelMgr
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, Sandia
+// Creation Date : 
+//-----------------------------------------------------------------------------
+bool Manager::registerParallelMgr (N_PDS_Manager * pdsMgrPtr )
+{
+  pdsMgrPtr_ = pdsMgrPtr;
+  return (pdsMgrPtr_ != 0x0);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setOptions
+// Purpose       : Sets the nonlinear solver options.
+// Special Notes :
+// Scope         : public
+// Creator       : Robert Hoekstra, SNL, Parallel Computational Sciences
+// Creation Date : 9/29/00
+//-----------------------------------------------------------------------------
+bool Manager::setOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["dcop"] = OB;
+  outputPtr_->setEnableHomotopyFlag(true);
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setTranOptions
+// Purpose       : Sets the nonlinear solver options.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 9/05/01
+//-----------------------------------------------------------------------------
+bool Manager::setTranOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["transient"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setHBOptions
+// Purpose       : Sets the nonlinear solver options.
+// Special Notes :
+// Scope         : public
+// Creator       : Ting Mei, SNL
+// Creation Date : 02/03/2009
+//-----------------------------------------------------------------------------
+bool Manager::setHBOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["hb"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getHBOptions
+// Purpose       : Sets the nonlinear solver options.
+// Special Notes :
+// Scope         : public
+// Creator       : Ting Mei, SNL
+// Creation Date : 02/03/2009
+//-----------------------------------------------------------------------------
+bool Manager::getHBOptions(N_UTL_OptionBlock & HBOB)
+{
+  HBOB = optionBlockMap_["hb"];
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setLinSolOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Robert Hoekstra, SNL, Parallel Computational Sciences
+// Creation Date : 11/9/00
+//-----------------------------------------------------------------------------
+bool Manager::setLinSolOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["petra"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setLocaOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 05/02/03
+//-----------------------------------------------------------------------------
+bool Manager::setLocaOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["loca"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setTwoLevelLocaOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 05/02/03
+//-----------------------------------------------------------------------------
+bool Manager::setTwoLevelLocaOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["twolevelloca"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setTwoLevelOptions
+// Purpose       : This option setter will create a new class structure.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 10/20/02
+//-----------------------------------------------------------------------------
+bool Manager::setTwoLevelOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["twolevel"] = OB;
+
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setTwoLevelTranOptions
+// Purpose       : This option setter will create a new class structure.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 10/20/02
+//-----------------------------------------------------------------------------
+bool Manager::setTwoLevelTranOptions(const N_UTL_OptionBlock & OB)
+{
+  optionBlockMap_["twoleveltran"] = OB;
+
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerRHSVector
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 5/01/00
+//-----------------------------------------------------------------------------
+bool Manager::registerRHSVector(N_LAS_Vector* tmp_RHSVecPtr)
+{
+  rhsVecPtr_ = tmp_RHSVecPtr;
+  return (rhsVecPtr_ != 0x0);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerLoader
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 5/01/00
+//-----------------------------------------------------------------------------
+bool Manager::registerLoader(N_LOA_Loader* tmp_LoaderPtr)
+{
+  loaderPtr_ = tmp_LoaderPtr;
+  return (loaderPtr_ != 0x0);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerOutputMgr
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 9/23/03
+//-----------------------------------------------------------------------------
+bool Manager::registerOutputMgr(N_IO_OutputMgr * outputPtr)
+{
+  outputPtr_ = outputPtr;
+  return (outputPtr_ != 0x0);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerLinearSystem
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 6/09/00
+//-----------------------------------------------------------------------------
+bool Manager::registerLinearSystem(N_LAS_System* tmp_LasSysPtr)
+{
+  lasSysPtr_ = tmp_LasSysPtr;
+  return (lasSysPtr_ != 0x0);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerPrecondFactory
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Heidi Thornquist, SNL, Electrical & Microsystem Modeling
+// Creation Date : 11/11/08
+//-----------------------------------------------------------------------------
+bool Manager::registerPrecondFactory(const RCP<N_LAS_PrecondFactory>& tmp_LasPrecPtr)
+{
+  lasPrecPtr_ = tmp_LasPrecPtr;
+  return (!Teuchos::is_null(lasPrecPtr_));
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerAnalysisManager
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 5/03/00
+//-----------------------------------------------------------------------------
+bool Manager::registerAnalysisManager(N_ANP_AnalysisManager* tmp_anaIntPtr)
+{
+  anaIntPtr_ = tmp_anaIntPtr;
+  return (anaIntPtr_ != 0x0);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::using Nox_
+// Purpose       : This function determines if we are using NOX or not.
+// Special Notes :
+// Scope         : private
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 10/30/02
+//-----------------------------------------------------------------------------
+void Manager::usingNox_ ()
+{
+  noxFlag_ = true;
+  noxFlagInner_ = true;
+  noxFlagTransient_ = true;
+
+  N_UTL_OptionBlock OBdcop = optionBlockMap_["dcop"];
+  N_UTL_OptionBlock OBtran = optionBlockMap_["transient"];
+
+  // scan for changes to the dcop values of noxFlag_
+  for (std::list<N_UTL_Param>::const_iterator it_tpL = OBdcop.getParams().begin();
+       it_tpL != OBdcop.getParams().end(); ++ it_tpL)
+  {
+    if (it_tpL->uTag() == "NOX")
+    {
+      noxFlag_ = it_tpL->getImmutableValue<int>();
+      noxFlagInner_ = noxFlag_;
+    }
+  }
+
+  // now check for a nox flag on the .options twolevel line, if it exists.
+  std::map<std::string,N_UTL_OptionBlock>::iterator obmIter = optionBlockMap_.find("twolevel") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    //N_UTL_OptionBlock OBtwoLevel = optionBlockMap_["twolevel"];
+    N_UTL_OptionBlock OBtwoLevel = obmIter->second;
+    for (std::list<N_UTL_Param>::const_iterator it_tpL = OBtwoLevel.getParams().begin();
+	 it_tpL != OBtwoLevel.getParams().end(); ++ it_tpL)
+    {
+      if (it_tpL->uTag() == "NOX")
+      {
+        noxFlagInner_ = it_tpL->getImmutableValue<int>();
+      }
+    }
+  }
+
+
+  // scan for changes to the transient value for noxFlagTransient_
+  for (std::list<N_UTL_Param>::const_iterator it_tpL = OBtran.getParams().begin();
+       it_tpL != OBtran.getParams().end(); ++ it_tpL)
+  {
+    if (it_tpL->uTag() == "NOX")
+    {
+      noxFlagTransient_ = it_tpL->getImmutableValue<int>();
+    }
+  }
+
+  obmIter = optionBlockMap_.find("hb") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    N_UTL_OptionBlock OBhb= obmIter->second;
+    for (std::list<N_UTL_Param>::const_iterator it_tpL = OBhb.getParams().begin();
+	 it_tpL != OBhb.getParams().end(); ++ it_tpL)
+    {
+      if (it_tpL->uTag() == "NOX")
+      {
+        noxFlag_ = it_tpL->getImmutableValue<int>();
+        noxFlagInner_ = noxFlag_;
+      }
+    }
+  }
+
+  // now check if the command line has specified nox.  The command line
+  // overrides the netlist.
+  if( commandLine_.getArgumentValue( "-nox" ) == "off" )
+  {
+    noxFlag_ = false;
+    noxFlagInner_ = false;
+    noxFlagTransient_ = false;
+  }
+
+#ifdef Xyce_DEBUG_NONLINEAR
+  Xyce::dout() << "noxFlag is: " << (noxFlag_ ? "true" : "false") << std::endl
+               << "noxFlagTransient is: " <<  (noxFlagTransient_ ? "true" : "false") << std::endl;
+#endif
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::allocateSolver_
+// Purpose       : This function determines which solver to allocate, and
+//                 allocates it.
+//
+//                 Right now the possibilities are:
+//
+//                    DampedNewton
+//                    NOXInterface
+//                    TwoLevelNewton
+//
+// Special Notes :
+// Scope         : private
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 10/28/02
+//-----------------------------------------------------------------------------
+bool Manager::allocateSolver_ ()
+{
+  bool bsuccess = true;
+  bool bs1 = true;
+
+  // determine if we are using NOX or not.
+  usingNox_ ();
+
+  // if ".options nonlin two-level" appeared in the netlist, then
+  // allocate the two-level solver.  Otherwise allocate one of the single
+  // level solvers.
+
+  if ( (optionBlockMap_.find(    "twolevel") != optionBlockMap_.end()) ||
+       (optionBlockMap_.find("twoleveltran") != optionBlockMap_.end())
+     )
+  {
+
+    twoLevelNewtonFlag_ = true;
+    nlsPtr_ = new TwoLevelNewton (noxFlag_, noxFlagInner_, commandLine_);
+  }
+  else
+  {
+    twoLevelNewtonFlag_ = false;
+    if (noxFlag_)
+    {
+      if( nlsPtr_ != 0x0)
+        delete nlsPtr_;
+      nlsPtr_ = new N_NLS_NOX::Interface(commandLine_);
+    }
+    else
+    {
+      if( nlsPtr_ != 0x0)
+        delete nlsPtr_;
+      nlsPtr_ = new DampedNewton(commandLine_);
+    }
+  }
+
+  // now register everything, now that the solver class is set up.
+  bs1 = nlsPtr_->registerLinearSystem(lasSysPtr_);    bsuccess = bsuccess && bs1;
+  bs1 = nlsPtr_->registerAnalysisManager(anaIntPtr_); bsuccess = bsuccess && bs1;
+  bs1 = nlsPtr_->registerLoader(loaderPtr_);          bsuccess = bsuccess && bs1;
+
+  if (!Teuchos::is_null(lasPrecPtr_))
+    bs1 = nlsPtr_->registerPrecondFactory(lasPrecPtr_); bsuccess = bsuccess && bs1;
+
+  bs1 = nlsPtr_->registerOutputMgr (outputPtr_); bsuccess = bsuccess && bs1;
+  bs1 = nlsPtr_->registerParallelMgr (pdsMgrPtr_); bsuccess = bsuccess && bs1;
+
+  std::map<std::string,N_UTL_OptionBlock>::iterator obmIter = optionBlockMap_.find("dcop") ;
+
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("transient") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setTranOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("hb") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setHBOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("loca") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setLocaOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("twolevel") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setTwoLevelOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("twoleveltran") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setTwoLevelTranOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("twolevelloca") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setTwoLevelLocaOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("petra") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setPetraOptions(OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("dcop_restart") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setDCOPRestartOptions(OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("ic") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setICOptions(OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("nodeset") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsPtr_->setNodeSetOptions(OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::initializeAll
+// Purpose       : This can only be called after the linear system
+//                 (N_LAS_System) has been registered, and after all the
+//                 options have been set.
+//
+// Special Notes : This function obtains the solution, temporary solution and
+//                 rhs vectors from the LAS system class.
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 6/12/00
+//-----------------------------------------------------------------------------
+bool Manager::initializeAll()
+{
+  bool bsuccess = true;
+  bool bs1 = true;
+  bool bs2 = true;
+
+  bs1 = allocateSolver_ ();        bsuccess = bsuccess && bs1;
+  nlsPtr_->setMatrixFreeFlag(matrixFreeFlag_);
+  bs2 = nlsPtr_->initializeAll();  bsuccess = bsuccess && bs2;
+
+  nlsPtr_->setReturnCodes (retCodes_);
+
+  initializeAllFlag_ = true;
+
+  if(conductanceExtractorPtr_ == 0x0)
+  {
+    conductanceExtractorPtr_ = new ConductanceExtractor (
+      *nlsPtr_, *topPtr_, commandLine_);
+  }
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::allocateTranSolver
+// Purpose       : Allocate a different solver for transient problems if
+//                 the user has requested a different one.
+// Special Notes :
+// Scope         : public
+// Creator       : Rich Schiek, Electrical and Microsystems Modeling
+// Creation Date : 12/22/08
+//-----------------------------------------------------------------------------
+void Manager::allocateTranSolver()
+{
+  bool bsuccess = true;
+  bool bs1 = true;
+
+  // only do a reallocation if the the solver type is changing from dcop to transient
+  if( ((noxFlag_ == true) && (noxFlagTransient_ == false)) ||
+      ((noxFlag_ == false) && (noxFlagTransient_ == true)) )
+  {
+    if (noxFlagTransient_)
+    {
+      if( nlsPtr_ != 0x0)
+        delete nlsPtr_;
+      nlsPtr_ = new N_NLS_NOX::Interface(commandLine_);
+    }
+    else
+    {
+      if( nlsPtr_ != 0x0)
+        delete nlsPtr_;
+      nlsPtr_ = new DampedNewton(commandLine_);
+    }
+
+    // now register everything, now that the solver class is set up.
+    nlsPtr_->registerLinearSystem(lasSysPtr_);
+    nlsPtr_->registerAnalysisManager(anaIntPtr_);
+    nlsPtr_->registerLoader(loaderPtr_);
+    nlsPtr_->registerOutputMgr (outputPtr_);
+    nlsPtr_->registerParallelMgr (pdsMgrPtr_); 
+
+    nlsPtr_->setMatrixFreeFlag(matrixFreeFlag_);
+    nlsPtr_->initializeAll();
+    nlsPtr_->setReturnCodes (retCodes_);
+
+    std::map<std::string,N_UTL_OptionBlock>::iterator obmIter = optionBlockMap_.find("transient") ;
+    if ( obmIter != optionBlockMap_.end() )
+    {
+      //  const N_UTL_OptionBlock OB = optionBlockMap_["transient"];
+      const N_UTL_OptionBlock OB = obmIter->second;
+      bs1 = nlsPtr_->setTranOptions (OB);
+      bsuccess = bsuccess && bs1;
+    }
+
+    initializeAllFlag_ = true;
+    delete conductanceExtractorPtr_;
+    conductanceExtractorPtr_ = new ConductanceExtractor (*nlsPtr_, *topPtr_, commandLine_);
+  }
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::isFirstContinuationParam
+// Purpose       : This function returns true if is the first LOCA
+//                 continuation param
+// Special Notes :
+// Scope         : public
+// Creator       : Rob Hoekstra, SNL, Parallel Computational Sciences
+// Creation Date : 7/06/05
+//-----------------------------------------------------------------------------
+bool Manager::isFirstContinuationParam()
+{
+  return nlsPtr_->isFirstContinuationParam ();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::isFirstSolveComplete
+// Purpose       : This function incdicates if the initial solve has completed
+// Special Notes :
+// Scope         : public
+// Creator       : Dave Shirley, PSSI
+// Creation Date : 6/22/06
+//-----------------------------------------------------------------------------
+bool Manager::isFirstSolveComplete()
+{
+  return nlsPtr_->isFirstSolveComplete ();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getContinuationStep
+// Purpose       : This function returns the value of the current LOCA
+//                 continuation step.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 2/28/05
+//-----------------------------------------------------------------------------
+int Manager::getContinuationStep ()
+{
+  return nlsPtr_->getContinuationStep ();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getLocaFlag
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 3/09/05
+//-----------------------------------------------------------------------------
+bool Manager::getLocaFlag ()
+{
+  return  nlsPtr_->getLocaFlag ();
+}
+//-----------------------------------------------------------------------------
+// Function      : Manager::getNumIterations
+// Purpose       : This function returns the value of the current Newton
+//                 iteration.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 2/23/01
+//-----------------------------------------------------------------------------
+int Manager::getNumIterations()
+{
+  return nlsPtr_->getNumIterations();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getCouplingMode
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, Parallel Computational Sciences
+// Creation Date : 12/05/02
+//-----------------------------------------------------------------------------
+int Manager::getCouplingMode ()
+{
+  return nlsPtr_->getCouplingMode ();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getNonLinInfo
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, Parallel Computational Sciences
+// Creation Date : 12/05/02
+//-----------------------------------------------------------------------------
+void Manager::getNonLinInfo (NonLinInfo & nlInfo)
+{
+  nlInfo.newtonIter    = nlsPtr_->getNumIterations();
+  nlInfo.twoLevelNewtonCouplingMode  = nlsPtr_->getCouplingMode ();
+  nlInfo.locaFlag      = nlsPtr_->getLocaFlag ();
+
+  if (nlInfo.locaFlag)
+  {
+    nlInfo.continuationStep       = nlsPtr_->getContinuationStep ();
+    nlInfo.firstContinuationParam = nlsPtr_->isFirstContinuationParam ();
+    nlInfo.firstSolveComplete     = nlsPtr_->isFirstSolveComplete ();
+  }
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getMaxNormF
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Rich Schiek, Electrical and Mems Modeling
+// Creation Date : 9/28/2009
+//-----------------------------------------------------------------------------
+double Manager::getMaxNormF() const
+{
+  return nlsPtr_->getMaxNormF();
+}
+
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getMaxNormFindex
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       :
+// Creation Date :
+//-----------------------------------------------------------------------------
+int Manager::getMaxNormFindex () const
+{
+  return nlsPtr_->getMaxNormFindex ();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : solve
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+int Manager::solve()
+{
+  int status = 0;
+
+  status = nlsPtr_->solve();
+  if (status >= 0)
+  {
+    if (Teuchos::is_null(exprPtr))
+      exprPtr = Teuchos::rcp( new N_UTL_Expression (std::string("0")) );
+    exprPtr->set_accepted_time();
+  }
+
+  return status;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : setAnalysisMode
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+void Manager::setAnalysisMode(AnalysisMode mode)
+{
+  nlsPtr_->setAnalysisMode(mode);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : resetAll
+// Purpose       : like setAnalysisMode, but will also result in NOX
+//                 resetting a few extra things.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, 9233
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+void Manager::resetAll(AnalysisMode mode)
+{
+  nlsPtr_->resetAll (mode);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getNumResidualLoads
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+int Manager::getNumResidualLoads()
+{
+  return nlsPtr_->getNumResidualLoads();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getNumJacobianLoads
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+int Manager::getNumJacobianLoads()
+{
+  return nlsPtr_->getNumJacobianLoads();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getNumLinearSolves
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+int Manager::getNumLinearSolves()
+{
+  return nlsPtr_->getNumLinearSolves();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getNumFailedLinearSolves()
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+int Manager::getNumFailedLinearSolves()
+{
+  return nlsPtr_->getNumFailedLinearSolves();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getTotalNumLinearIters
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Scott A. Hutchinson, SNL, Computational Sciences Department
+// Creation Date : 3/20/02
+//-----------------------------------------------------------------------------
+unsigned int Manager::getTotalNumLinearIters()
+{
+  return nlsPtr_->getTotalNumLinearIters();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getNumJacobianFactorizations
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+int Manager::getNumJacobianFactorizations()
+{
+  return nlsPtr_->getNumJacobianFactorizations();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getTotalLinearSolveTime
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+double Manager::getTotalLinearSolveTime()
+{
+  return nlsPtr_->getTotalLinearSolveTime();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getTotalResidualLoadTime
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+double Manager::getTotalResidualLoadTime()
+{
+  return nlsPtr_->getTotalResidualLoadTime();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : getTotalJacobianLoadTime
+// Purpose       : 
+// Special Notes : 
+// Scope         : public
+// Creator       : Tamara Kolda, SNL, CSMR
+// Creation Date : 1/30/02
+//-----------------------------------------------------------------------------
+double Manager::getTotalJacobianLoadTime()
+{
+  return nlsPtr_->getTotalJacobianLoadTime();
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setSensOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 11/18/02
+//-----------------------------------------------------------------------------
+bool Manager::setSensOptions (const N_UTL_OptionBlock & OB)
+{
+  bool bsuccess = true;
+
+  optionBlockMap_["sens"] = OB;
+  return true;
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setSensitivityOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 11/18/02
+//-----------------------------------------------------------------------------
+bool Manager::setSensitivityOptions (const N_UTL_OptionBlock & OB)
+{
+  bool bsuccess = true;
+
+  optionBlockMap_["sensitivity"] = OB;
+  return true;
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::enableSensitivity
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 04/30/03
+//-----------------------------------------------------------------------------
+bool Manager::enableSensitivity ()
+{
+  bool bsuccess = true;
+
+  if (!setupSensFlag_)
+  {
+    bool b1 = setupSensitivity_ ();
+    bsuccess = bsuccess && b1;
+  }
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::icSensitivity
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL
+// Creation Date : 
+//-----------------------------------------------------------------------------
+bool Manager::icSensitivity (
+     std::vector<double> & objectiveVec,
+     std::vector<double> & dOdpVec, 
+     std::vector<double> & dOdpAdjVec,
+     std::vector<double> & scaled_dOdpVec, 
+     std::vector<double> & scaled_dOdpAdjVec)
+{
+  return nlsSensitivityPtr_->icSensitivity(
+      objectiveVec,
+      dOdpVec, dOdpAdjVec,
+      scaled_dOdpVec, scaled_dOdpAdjVec);
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::calcSensitivity
+// Purpose       : This is the controller function for performing a direct
+//                 sensitivity calculation.  It is generally called from
+//                 the time integration package, as only that package really
+//                 knows when to do it... (I may change this later.)
+// Special Notes :
+// Scope         : public
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 10/31/02
+//-----------------------------------------------------------------------------
+bool Manager::calcSensitivity 
+  (
+   std::vector<double> & objectiveVec,
+   std::vector<double> & dOdpVec, 
+   std::vector<double> & dOdpAdjVec,
+   std::vector<double> & scaled_dOdpVec, 
+   std::vector<double> & scaled_dOdpAdjVec)
+{
+  bool bsuccess = true;
+
+  if (!setupSensFlag_)
+  {
+    std::string msg = "Function Manager::calcSensitivity called,\n";
+    msg += "but Manager::enableSensitivity must be called first.\n";
+    N_ERH_ErrorMgr::report(N_ERH_ErrorMgr::DEV_FATAL_0, msg);
+  }
+
+  bsuccess = nlsSensitivityPtr_->solve (objectiveVec, 
+      dOdpVec, dOdpAdjVec,
+      scaled_dOdpVec, scaled_dOdpAdjVec);
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setupSensitivity_
+// Purpose       :
+// Special Notes :
+// Scope         : private
+// Creator       : Eric R. Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 10/31/02
+//-----------------------------------------------------------------------------
+bool Manager::setupSensitivity_ ()
+{
+  bool bsuccess = true;
+  bool bs1 = true;
+
+  nlsSensitivityPtr_ = new Sensitivity (*nlsPtr_, *topPtr_, commandLine_);
+  bs1 = nlsSensitivityPtr_->registerParallelMgr (pdsMgrPtr_); bsuccess = bsuccess && bs1;
+  bs1 = nlsSensitivityPtr_->registerTIADataStore(dsPtr_); bsuccess = bsuccess && bs1;
+
+  std::map<std::string,N_UTL_OptionBlock>::iterator obmIter = optionBlockMap_.find("sens") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsSensitivityPtr_->setOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  obmIter = optionBlockMap_.find("sensitivity") ;
+  if ( obmIter != optionBlockMap_.end() )
+  {
+    const N_UTL_OptionBlock OB = obmIter->second;
+    bs1 = nlsSensitivityPtr_->setSensitivityOptions (OB);
+    bsuccess = bsuccess && bs1;
+  }
+
+  setupSensFlag_ = true;
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerTopology
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 6/09/00
+//-----------------------------------------------------------------------------
+bool Manager::registerTopology (N_TOP_Topology * ptr)
+{
+  topPtr_ = ptr;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::registerTIADataStore
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter
+// Creation Date : 
+//-----------------------------------------------------------------------------
+bool Manager::registerTIADataStore(N_TIA_DataStore * ds_tmp)
+{
+  dsPtr_ = ds_tmp;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setReturnCodes
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 7/02/03
+//-----------------------------------------------------------------------------
+void Manager::setReturnCodes (const ReturnCodes & retCodeTmp)
+{
+  retCodes_ = retCodeTmp;
+  if (initializeAllFlag_)
+  {
+    nlsPtr_->setReturnCodes (retCodes_);
+  }
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::getReturnCodes
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Rich Schiek, Electrical and MEMS Modeling
+// Creation Date : 9/28/2009
+//-----------------------------------------------------------------------------
+ReturnCodes Manager::getReturnCodes() const
+{
+  // the ReturnCodes structure is very simple, so just
+  // return a copy of it.
+  return retCodes_;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setTimeOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 5/29/05
+//-----------------------------------------------------------------------------
+bool Manager::setTimeOptions(const N_UTL_OptionBlock & OB)
+{
+  bool bsuccess = true;
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setDCOPRestartOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 09/17/07
+//-----------------------------------------------------------------------------
+bool Manager::setDCOPRestartOptions (const N_UTL_OptionBlock& OB )
+{
+  optionBlockMap_["dcop_restart"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setICOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 09/17/07
+//-----------------------------------------------------------------------------
+bool Manager::setICOptions (const N_UTL_OptionBlock& OB )
+{
+  optionBlockMap_["ic"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setNodeSetOptions
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 09/25/07
+//-----------------------------------------------------------------------------
+bool Manager::setNodeSetOptions (const N_UTL_OptionBlock& OB )
+{
+  optionBlockMap_["nodeset"] = OB;
+  return true;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::obtainConductances
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 03/04/06
+//-----------------------------------------------------------------------------
+bool Manager::obtainConductances (
+        const std::map<std::string,double> & inputMap,
+        std::vector<double> & outputVector,
+        std::vector< std::vector<double> > & jacobian
+    )
+{
+  bool bsuccess = true;
+
+  bsuccess =
+    conductanceExtractorPtr_->extract( inputMap, outputVector, jacobian );
+
+  return bsuccess;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::setMatrixFreeFlag
+// Purpose       :
+// Special Notes :
+// Scope         : public
+// Creator       : Todd Coffey, Ting Mei
+// Creation Date : 07/29/08
+//-----------------------------------------------------------------------------
+void Manager::setMatrixFreeFlag ( bool matrixFreeFlag )
+{
+  matrixFreeFlag_ = matrixFreeFlag;
+}
+
+//-----------------------------------------------------------------------------
+// Function      : Manager::obtainConductances
+//
+// Purpose       : Same function as above, only this one is for ISO-devices
+//                 instead of Vsrc's.
+// Special Notes :
+// Scope         : public
+// Creator       : Eric Keiter, SNL, Parallel Computational Sciences
+// Creation Date : 03/04/06
+//-----------------------------------------------------------------------------
+bool Manager::obtainConductances (
+        const std::string & isoName,
+        std::vector< std::vector<double> > & jacobian )
+{
+  bool bsuccess = true;
+
+  bsuccess =
+    conductanceExtractorPtr_->extract( isoName, jacobian );
+
+  return bsuccess;
+}
+
+} // namespace Nonlinear
+} // namespace Xyce

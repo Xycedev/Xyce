@@ -1,0 +1,266 @@
+--- N_DEV_ADMSvbic.C	2014-05-13 09:49:38.556246040 -0600
++++ /ascldap/users/dgbaur/devl/Xyce/Xyce/src/DeviceModelPKG/ADMS/src/N_DEV_ADMSvbic.C	2014-05-13 08:50:37.000000000 -0600
+@@ -731,7 +731,8 @@
+                                                            q_dt_Equ_b_Node_Ptr(0),
+                                                            q_dt_Equ_ci_Node_Ptr(0),
+                                                            q_dt_Equ_c_Node_Ptr(0),
+-                                                           admsTemperature(getDeviceOptions().temp.getImmutableValue<double>())
++                                                           admsTemperature(getDeviceOptions().temp.getImmutableValue<double>()),
++                                                           externalNodeMode(false)
+ 
+ {
+   numIntVars = 6 + 0;
+@@ -741,6 +742,23 @@
+   // Right now, we only have state for limited probes...
+   numStateVars = 7;
+ 
++  // Manually inserted code:
++  devConMap.resize(4);
++  devConMap[0] = 1;
++  devConMap[1] = 1;
++  devConMap[2] = 1;
++  devConMap[3] = 2;
++
++  if ( instance_block.numExtVars > 4)
++  {
++    numExtVars = instance_block.numExtVars;
++    externalNodeMode = true;
++    numIntVars -= numExtVars-4;
++    devConMap.resize(numExtVars);
++    for (int i1=4; i1<numExtVars; ++i1)
++      devConMap[i1]=1;
++  }
++  // End manually inserted code
+ 
+   // Set up jacobian stamp:
+ 
+@@ -866,6 +884,17 @@
+   // calculate dependent (i.e. computed params) and check for errors.
+   processParams();
+   collapseNodes();
++
++  // Manually added code
++  // there are always ci and bi, but the others could be mapped away.
++  int numExist = ((collapseNode_cx)?0:1) + ((collapseNode_bx)?0:1) + ((collapseNode_ei)?0:1) + 2;
++
++  if (externalNodeMode && (numExtVars != 4+numExist))
++  {
++    DevelFatal0(*this) << "Instance " << getName() << " has wrong number of external nodes!"
++                       << " If you specify any internal nodes as external, you must set all that exist. ";
++  }
++  // End manually added code
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -1029,24 +1058,46 @@
+   li_e = extLIDVecRef[i++];
+   li_dt = extLIDVecRef[i++];
+ 
+-
+-  i=0;
++  // Manually modified code
++  int j=0;
+   if (!collapseNode_cx)
+-    li_cx = intLIDVecRef[i++];
++  {
++    if (externalNodeMode)
++      li_cx = extLIDVecRef[i++];
++    else
++      li_cx = intLIDVecRef[j++];
++  }
+   else
+     li_cx = li_c;
+-  li_ci = intLIDVecRef[i++];
++  if (externalNodeMode)
++    li_ci = extLIDVecRef[i++];
++  else
++    li_ci = intLIDVecRef[j++];
++
+   if (!collapseNode_bx)
+-    li_bx = intLIDVecRef[i++];
++  {
++    if (externalNodeMode)
++      li_bx = extLIDVecRef[i++];
++    else
++      li_bx = intLIDVecRef[j++];
++  }
+   else
+     li_bx = li_b;
+-  li_bi = intLIDVecRef[i++];
++  if (externalNodeMode)
++    li_bi = extLIDVecRef[i++];
++  else
++    li_bi = intLIDVecRef[j++];
+   if (!collapseNode_ei)
+-    li_ei = intLIDVecRef[i++];
++  {
++    if (externalNodeMode)
++      li_ei = extLIDVecRef[i++];
++    else
++      li_ei = intLIDVecRef[j++];
++  }
+   else
+     li_ei = li_e;
+-  li_bp = intLIDVecRef[i++];
+-
++  li_bp = intLIDVecRef[j++];
++  // End manually modified code
+ 
+ #ifdef Xyce_DEBUG_DEVICE
+   if (getDeviceOptions().debugLevel > 0)
+@@ -1086,21 +1137,32 @@
+ {
+   if (intNameMap.empty())
+   {
+-    if (!collapseNode_cx)
++    if (!collapseNode_cx && !externalNodeMode)
+     {
+       intNameMap[li_cx] = spiceInternalName(getName(), "cx");
+     }
+-    intNameMap[li_ci] = spiceInternalName(getName(), "ci");
+-    if (!collapseNode_bx)
++
++    if (!externalNodeMode)
++    {
++      intNameMap[li_ci] = spiceInternalName(getName(), "ci");
++    }
++
++    if (!collapseNode_bx && !externalNodeMode)
+     {
+       intNameMap[li_bx] = spiceInternalName(getName(), "bx");
+     }
+-    intNameMap[li_bi] = spiceInternalName(getName(), "bi");
+-    if (!collapseNode_ei)
++
++    if (!externalNodeMode)
++    {
++      intNameMap[li_bi] = spiceInternalName(getName(), "bi");
++    }
++
++    if (!collapseNode_ei && !externalNodeMode)
+     {
+       intNameMap[li_ei] = spiceInternalName(getName(), "ei");
+     }
+     intNameMap[li_bp] = spiceInternalName(getName(), "bp");
++    // End manually modified code
+   }
+   return intNameMap;
+ }
+@@ -1757,9 +1819,51 @@
+ 
+   origFlag = true;
+ 
++  // code manually moved from below, because we need it earlier than predicted by adms
++  tVCrit = (adms_vt(admsTemperature)*log((adms_vt(admsTemperature)/(1.41421356237309504880*(model_.IS)))));
++
+   if (getSolverState().newtonIter == 0)
+   {
+ 
++    if (getSolverState().initJctFlag && getDeviceOptions().voltageLimiterFlag)
++    {
++      // manually inserted code:
++      if (getSolverState().inputOPFlag)
++      {
++        N_LAS_Vector * flagSolVectorPtr = (extData.flagSolVectorPtr);
++        if ((*flagSolVectorPtr)[li_e] == 0 ||
++            (*flagSolVectorPtr)[li_ei] == 0 ||
++            (*flagSolVectorPtr)[li_b] == 0 ||
++            (*flagSolVectorPtr)[li_bi] == 0 ||
++            (*flagSolVectorPtr)[li_bx] == 0 ||
++            (*flagSolVectorPtr)[li_bp] == 0 ||
++            (*flagSolVectorPtr)[li_c] == 0 ||
++            (*flagSolVectorPtr)[li_ci] == 0 ||
++            (*flagSolVectorPtr)[li_cx] == 0 ||
++            (*flagSolVectorPtr)[li_dt] == 0 )
++        {
++          Vbci_limited = Vbcx_limited = Vbep_limited = 0;
++          Vbe_limited = Vbei_limited = Vbex_limited = tVCrit;
++          Vrth_limited = 0;
++          origFlag = false;
++        }
++      }
++      else
++      {
++        Vbci_limited = Vbcx_limited = Vbep_limited = 0;
++        Vbe_limited = Vbei_limited = Vbex_limited = tVCrit;
++        Vrth_limited = 0;
++        origFlag = false;
++#ifdef Xyce_DEBUG_DEVICE
++        if (getDeviceOptions().debugLevel > 0 && getSolverState().debugTimeFlag)
++        {
++          Xyce::dout() << " Setting device initial condition to Base-Emitter drop=tVCrit (" << tVCrit << ")"<<std::endl;
++        }
++#endif
++      }
++    }
++    // end manually inserted code
++
+     if (!(getSolverState().dcopFlag)||(getSolverState().locaEnabledFlag && getSolverState().dcopFlag))
+     {
+       Vbe_old = ((*extData.currStaVectorPtr))[li_state_admsProbeID_V_b_e];
+@@ -1793,7 +1897,8 @@
+   }
+ 
+   // -- code converted from analog/code block
+-  tVCrit = (adms_vt(admsTemperature)*log((adms_vt(admsTemperature)/(1.41421356237309504880*(model_.IS)))));
++  // manually moved to above, we need it earlier than this:
++  //tVCrit = (adms_vt(admsTemperature)*log((adms_vt(admsTemperature)/(1.41421356237309504880*(model_.IS)))));
+ 
+ 
+   //Vbei = ($limit(V(bi,ei),"typedpnjlim_new",$vt(),tVCrit,dtype));
+@@ -3022,7 +3127,15 @@
+                  <<Jdxp_dynamic[admsNodeID_bp] << std::endl;
+ 
+     if (!origFlag)
++    {
+       Xyce::dout() << "This step was limited by this device." << std::endl;
++      Xyce::dout() << " Vbei_limited = " << Vbei_limited << " _orig = " << Vbei_orig << " diff = " << Vbei_limited - Vbei_orig << std::endl;
++      Xyce::dout() << " Vbci_limited = " << Vbci_limited << " _orig = " << Vbci_orig << " diff = " << Vbci_limited - Vbci_orig << std::endl;
++      Xyce::dout() << " Vbex_limited = " << Vbex_limited << " _orig = " << Vbex_orig << " diff = " << Vbex_limited - Vbex_orig << std::endl;
++      Xyce::dout() << " Vbcx_limited = " << Vbcx_limited << " _orig = " << Vbcx_orig << " diff = " << Vbcx_limited - Vbcx_orig << std::endl;
++      Xyce::dout() << " Vbep_limited = " << Vbep_limited << " _orig = " << Vbep_orig << " diff = " << Vbep_limited - Vbep_orig << std::endl;
++      Xyce::dout() << " Vrth_limited = " << Vrth_limited << " _orig = " << Vrth_orig << " diff = " << Vrth_limited - Vrth_orig << std::endl;
++    }
+   }
+ #endif // Xyce_DEBUG_DEVICE
+   return true;
+@@ -4516,11 +4629,21 @@
+   if (!given("XYCEADMSMODTEMP"))
+     admsModTemp=getDeviceOptions().temp.getImmutableValue<double>();
+ 
++  // Fix the TNOM parameter that has "helpfully" been converted to Kelvin
++  // by the DeviceEntity class
++
++  if (given("TNOM"))
++    TNOM -= CONSTCtoK;
++
+   // Calculate any parameters specified as expressions:
+ 
+   updateDependentParameters();
+ 
+   // calculate dependent (ie computed) params and check for errors:
++  //Manually inserted these two lines:
++  if (getType() == "pnp" || getType() == "PNP")
++    dtype = -1;
++
+   processParams();
+ }
+ 
+--- N_DEV_ADMSvbic.h	2013-12-16 12:47:42.940220539 -0700
++++ N_DEV_ADMSvbic.h	2013-12-16 12:48:13.168269392 -0700
+@@ -69,3 +69,4 @@
+   static int numNodes() {return 4;}
++  static int numOptionalNodes() {return 5;}
+   static bool modelRequired() {return true;}
+   static bool isLinearDevice() {return false;}
+@@ -374,6 +375,10 @@
+   // "TEMP" parameter to use
+   double admsInstTemp;
+ 
++  // This is used to flag whether the cx, bx, and ei nodes are exposed
++  // on the instance line as external nodes.
++  bool externalNodeMode;
++
+   // thermal voltage at kelvin temperature temp)
+   inline double adms_vt(double temp) {return(CONSTKoverQ*temp);};
+ 

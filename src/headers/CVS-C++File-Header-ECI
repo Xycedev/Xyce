@@ -1,0 +1,48 @@
+//-------------------------------------------------------------------------
+// Copyright Notice
+//
+//   Copyright 2002 Sandia Corporation. Under the terms
+//   of Contract DE-AC04-94AL85000 with Sandia Corporation, the U.S.
+//   Government retains certain rights in this software.  Export of this
+//   program may require a license from the United States Government.
+//
+//    Xyce(TM) Parallel Electrical Simulator
+//    Copyright (C) 2002-2014 Sandia Corporation
+//
+// OFFICIAL USE ONLY
+// May be exempt from public release under the Freedom of Information Act
+// (5 U.S.C. 552), exemption number and category: 3 Statutory Exemption
+// Department of Energy review required before public release.
+// Name/Org: Scott Hutchinson, 1437    Date: 5/9/07
+//
+// EXPORT CONTROLLED INFORMATION:
+// WARNING–This document contains technical data whose export is restricted
+// by the Atomic Energy Act of 1954, as amended, 42. U.S.C. §2011 et seq.
+// Violations of these export laws are subject to severe criminal penalties.
+//
+//-------------------------------------------------------------------------
+
+//-------------------------------------------------------------------------
+// Filename       : $RCSfile: CVS-C++File-Header-ECI,v $
+//
+// Purpose        : Describe the purpose of the contents of the file. If the
+//                  contains the header file of a class, provide a clear
+//                  description of the nature of the class.
+//
+// Special Notes  : Specify any "hidden" or subtle details of the class here.
+//                  Portability details, error handling information, etc.
+//
+// Creator        : {Name of the Creator of the File}
+//
+// Creation Date  : {mm/dd/yy}
+//
+// Revision Information:
+// ---------------------
+//
+// Revision Number: $Revision: 1.2 $
+//
+// Revision Date  : $Date: 2014/08/05 15:59:35 $
+//
+// Current Owner  : $Author: jcverle $
+//-------------------------------------------------------------------------
+

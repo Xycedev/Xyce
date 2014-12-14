@@ -1,0 +1,6 @@
+INPUT += ../../src/DeviceModelPKG/index.dox \
+         ../../src/DeviceModelPKG/Core \
+         ../../src/DeviceModelPKG/OpenModels \
+         ../../src/DeviceModelPKG/ADMS \
+         ../../src/DeviceModelPKG/NeuronModels \
+         ../../src/DeviceModelPKG/TCADModels 
