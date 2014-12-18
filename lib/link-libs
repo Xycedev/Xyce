@@ -1,0 +1,7 @@
+#!/bin/bash
+
+LIBUMFPACK=`find ../../SuiteSparse -name libumfpack.a`
+
+if [ -f "$LIBUMFPACK" ] ; then
+  ln -s $LIBUMFPACK .
+fi
