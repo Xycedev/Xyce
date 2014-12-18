@@ -1,0 +1,31 @@
+#!/bin/bash -xv
+ 
+export CMAKE_CURRENT_BINARY_DIR=/usr/local/src/trilinos-build 
+export CMAKE_CURRENT_SOURCE_DIR=/usr/local/src/trilinos
+
+if [ ! -d $CMAKE_CURRENT_SOURCE_DIR/.git ] ; then
+    (cd /usr/local/src ; git clone https://github.com/trilinos/trilinos.git)
+fi
+
+mkdir -p $CMAKE_CURRENT_BINARY_DIR
+
+rm -fr {$CMAKE_CURRENT_SOURCE_DIR,$CMAKE_CURRENT_BINARY_DIR}/{CMakeCache.txt,CMakeFiles}
+
+#for f in CMakeLists.txt ; do
+#  case $f in 
+#      */*) mkdir -p `dirname $f` ;;
+#  esac
+#  cp {$CMAKE_CURRENT_SOURCE_DIR,$CMAKE_CURRENT_BINARY_DIR}/$f
+#done
+
+cd $CMAKE_CURRENT_BINARY_DIR
+
+cmake \
+-DTPL_ENABLE_MPI=ON \
+-DMPI_BASE_DIR=/usr \
+-DTrilinos_ENABLE_ALL_PACKAGES=ON \
+-DTPL_ENABLE_Netcdf=OFF \
+-DCMAKE_INSTALL_PREFIX=/usr/local \
+-DCMAKE_CURRENT_BINARY_DIR=$CMAKE_CURRENT_BINARY_DIR \
+-DCMAKE_CXX_FLAGS="-I/usr/include/qt4 -I/usr/include/qt4/QtCore -I/usr/include/qt4/QtGui -I/usr/include/qt4/QtXml" \
+$CMAKE_CURRENT_SOURCE_DIR

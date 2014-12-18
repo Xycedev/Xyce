@@ -1,0 +1,27 @@
+#!/bin/tcsh -f
+
+set args = ($*:q)
+
+if ( -f cpp.extra ) then
+    set args = (`cat cpp.extra` $args:q)
+endif
+
+set argv = ($path:q)
+shift
+
+set path = ($*:q)
+
+if ( $?DEBUG_CONFIG ) then
+  (pwd ; echo cc $args:q) >& /dev/tty
+  cc $args:q
+  set sts = $status
+  if ( -f conftest.c ) then
+    if ( $sts ) then
+      cc $args:q >& cc.log
+      gedit conftest.c cc.log
+    endif
+  endif
+  exit $sts
+endif
+
+exec cc $args:q
