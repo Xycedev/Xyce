@@ -1,0 +1,13 @@
+#!/bin/bash
+
+LIBUMFPACK=`find ../../SuiteSparse -name libumfpack.a`
+
+if [ -f "$LIBUMFPACK" ] ; then
+  ln -s $LIBUMFPACK .
+fi
+
+LIBSUITESPARSECONFIG=`find ../../SuiteSparse -name libsuitesparseconfig.a`
+
+if [ -f "$LIBSUITESPARSECONFIG" ] ; then
+  ln -s $LIBSUITESPARSECONFIG .
+fi

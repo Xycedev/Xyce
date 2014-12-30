@@ -1,0 +1,13 @@
+#!/bin/bash
+
+MPI_HDRS=/usr/include/mpich
+if [ ! -f $MPI_HDRS/mpi.h ] ; then
+  MPI_HDRS=/usr/include/mpich-x86_64
+fi
+
+export CPPFLAGS="-I/usr/local/include -I$MPI_HDRS -I/usr/local/src/trilinos/packages/amesos/src"
+export LDFLAGS="-L/usr/local/src/Xyce/lib -lsuitesparseconfig -lrt"
+
+PATH=/usr/local/src/Xyce-master/bin:$PATH
+
+exec /usr/local/src/Xyce-master/configure $@

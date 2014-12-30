@@ -1,0 +1,9 @@
+#!/bin/bash -xv
+ 
+export MAKE_CURRENT_BINARY_DIR=/usr/local/src/trilinos-build 
+export MAKE_CURRENT_SOURCE_DIR=/usr/local/src/trilinos
+
+cd $MAKE_CURRENT_BINARY_DIR
+
+PATH=/usr/local/src/Xyce/bin:$PATH
+make $*

@@ -1,0 +1,8 @@
+#!/bin/tcsh -f
+
+set path = (/usr/local/src/Xyce-master/bin $path:q)
+
+exec make CXX="c++ -I$PWD/../trilinos/packages/epetraext/src/transform/ -DXyce_TRILINOS_DEV"\
+          LDFLAGS="-L/usr/lib/openmpi/lib/ -L/usr/local/src/Xyce-master/lib -L/usr/lib64/mpich/lib -lmpichcxx -lmpich -lkokkos -lkokkostsqr -lkokkosnodeapi -lkokkoslinalg -lthyracore -lthyraepetraext -ltpetra"\
+          $*:q
+     
