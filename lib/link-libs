@@ -5,9 +5,12 @@ LIBUMFPACK=`find ../../SuiteSparse -name libumfpack.a`
 if [ -f "$LIBUMFPACK" ] ; then
   ln -s $LIBUMFPACK .
 fi
+<<<<<<< HEAD
 
 LIBSUITESPARSECONFIG=`find ../../SuiteSparse -name libsuitesparseconfig.a`
 
 if [ -f "$LIBSUITESPARSECONFIG" ] ; then
   ln -s $LIBSUITESPARSECONFIG .
 fi
+=======
+>>>>>>> 54a37be529b36d149d240566f08e13a4fb606afa
